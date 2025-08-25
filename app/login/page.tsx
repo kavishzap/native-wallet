@@ -1,4 +1,6 @@
 "use client";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 import type React from "react";
 import Image from "next/image";
@@ -16,11 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Eye, EyeOff } from "lucide-react";
-import { createClient } from "@supabase/supabase-js";
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL as string;
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY as string;
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+import { getSupabaseClient } from "@/lib/supabaseClient";
 
 function ClientOnly({ children }: { children: React.ReactNode }) {
   const [mounted, setMounted] = useState(false);
@@ -39,11 +37,12 @@ type NativeUser = {
   nic: string | null;
   amount: string | number | null;
   card_url: string | null;
-  password: string; // currently plaintext in your table
+  password: string; // plaintext in your current table
 };
 
 export default function LoginPage() {
   const router = useRouter();
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
@@ -53,10 +52,7 @@ export default function LoginPage() {
   const [errPassword, setErrPassword] = useState<string | null>(null);
   const [errForm, setErrForm] = useState<string | null>(null);
 
-  const emailRegex = useMemo(
-    () => /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
-    []
-  );
+  const emailRegex = useMemo(() => /^[^\s@]+@[^\s@]+\.[^\s@]+$/, []);
 
   const validate = () => {
     let ok = true;
@@ -84,6 +80,14 @@ export default function LoginPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validate()) return;
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setErrForm(
+        "App configuration missing. Please try again later."
+      );
+      return;
+    }
 
     setIsLoading(true);
     try {

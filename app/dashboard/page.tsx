@@ -1,4 +1,6 @@
 "use client";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -46,7 +48,7 @@ import {
   TrendingDown,
   Download,
 } from "lucide-react";
-import { supabase } from "@/lib/supabaseClient";
+import { getSupabaseClient } from "@/lib/supabaseClient";
 
 type UiTransaction = {
   id: string;
@@ -125,6 +127,13 @@ export default function DashboardPage() {
       setLoadingTx(true);
       setTxError(null);
 
+      const supabase = getSupabaseClient();
+      if (!supabase) {
+        setTxError("App configuration missing. Please try again later.");
+        setLoadingTx(false);
+        return;
+      }
+
       const TABLE_NAME = "native_transactions";
       try {
         const { data, error } = await supabase
@@ -144,7 +153,7 @@ export default function DashboardPage() {
           return {
             id: String(r.id),
             date: r.created_at,
-            amount: signed,
+            amount: Number.isFinite(signed) ? signed : 0,
             type: isTopUp ? "Top-up" : "Purchase",
           };
         });
@@ -241,7 +250,7 @@ export default function DashboardPage() {
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Top bar (not sticky so centering is easy) */}
+      {/* Top bar */}
       <div className="w-full">
         <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div>
@@ -273,8 +282,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Center the 2-column grid in the viewport.
-          On mobile it stacks (2 rows), on lg+ it shows side-by-side (2 columns). */}
+      {/* Centered 2-col grid */}
       <main className="min-h-[calc(100vh-88px)] flex items-center justify-center px-4 py-6">
         <div className="w-full max-w-7xl">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
@@ -454,7 +462,7 @@ export default function DashboardPage() {
                                       : "text-red-600 dark:text-red-400"
                                   }
                                 >
-                                  Rs {t.amount}
+                                  Rs {t.amount.toFixed ? t.amount.toFixed(2) : t.amount}
                                 </span>
                               </TableCell>
                             </TableRow>

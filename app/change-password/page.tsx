@@ -1,4 +1,6 @@
 "use client";
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 import type React from "react";
 import Image from "next/image";
@@ -18,7 +20,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Eye, EyeOff, ArrowLeft, CheckCircle } from "lucide-react";
 import { ThemeToggle } from "@/components/theme-toggle";
 import NativeLogo from "../login/native.png";
-import { supabase } from "@/lib/supabaseClient";
+import { getSupabaseClient } from "@/lib/supabaseClient";
 
 type NativeUser = {
   id: number;
@@ -48,7 +50,6 @@ export default function ChangePasswordPage() {
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState("");
 
-  // Simple email regex
   const isValidEmail = (val: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(val);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -83,6 +84,13 @@ export default function ChangePasswordPage() {
     }
     if (newPwd === oldPwd) {
       setError("New password must be different from the current password.");
+      return;
+    }
+
+    // Lazy-acquire supabase on the client
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      setError("App configuration missing. Please try again later.");
       return;
     }
 
@@ -166,7 +174,6 @@ export default function ChangePasswordPage() {
             Change Password
           </CardTitle>
 
-          {/* Match the login header with a logo (client-only to avoid hydration edge cases) */}
           <ClientOnly>
             <Image
               src={NativeLogo}
