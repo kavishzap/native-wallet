@@ -6,9 +6,8 @@ import { ThemeProvider } from "@/components/theme-provider"
 import "./globals.css"
 
 export const metadata: Metadata = {
-  title: "Modern Dashboard",
-  description: "A modern auth and dashboard application",
-  generator: "v0.app",
+  title: "Native Lodge Wallet",
+  description: "Native Lodge user Wallet",
 }
 
 export default function RootLayout({

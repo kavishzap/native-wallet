@@ -1,388 +1,529 @@
-"use client"
+"use client";
 
-import { useEffect, useState } from "react"
-import { useRouter } from "next/navigation"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { Badge } from "@/components/ui/badge"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Button } from "@/components/ui/button";
 import {
-  Settings,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import {
   LogOut,
-  Key,
-  User,
-  Mail,
-  Calendar,
   ArrowUpDown,
   ArrowUp,
   ArrowDown,
   TrendingUp,
   TrendingDown,
-} from "lucide-react"
-import { ThemeToggle } from "@/components/theme-toggle"
+  Download,
+} from "lucide-react";
+import { supabase } from "@/lib/supabaseClient";
 
-type Transaction = {
-  id: string
-  date: string
-  amount: number
-  type: "Purchase" | "Top-up"
-  description: string
-}
+type UiTransaction = {
+  id: string;
+  date: string; // ISO string
+  amount: number; // + for Top-up, - for Purchase
+  type: "Purchase" | "Top-up";
+};
 
-const sampleTransactions: Transaction[] = [
-  { id: "1", date: "2024-01-15", amount: -89.99, type: "Purchase", description: "Online Store Purchase" },
-  { id: "2", date: "2024-01-14", amount: 500.0, type: "Top-up", description: "Account Top-up" },
-  { id: "3", date: "2024-01-12", amount: -45.5, type: "Purchase", description: "Grocery Store" },
-  { id: "4", date: "2024-01-10", amount: -120.0, type: "Purchase", description: "Subscription Service" },
-  { id: "5", date: "2024-01-08", amount: 1000.0, type: "Top-up", description: "Salary Deposit" },
-  { id: "6", date: "2024-01-05", amount: -25.99, type: "Purchase", description: "Coffee Shop" },
-  { id: "7", date: "2024-01-03", amount: -199.99, type: "Purchase", description: "Electronics Store" },
-  { id: "8", date: "2024-01-01", amount: 250.0, type: "Top-up", description: "Gift Card Redemption" },
-]
+type ApiTransaction = {
+  id: number | string;
+  amount: string | number;
+  type: "Debit" | "Top Up";
+  created_at: string;
+  user: string | number;
+};
+
+type NativeUser = {
+  id: number;
+  fname?: string;
+  lname?: string;
+  email: string;
+  card_url?: string | null;
+  amount?: number | string | null;
+};
+
+const PAGE_SIZE = 10;
 
 export default function DashboardPage() {
-  const [userEmail, setUserEmail] = useState("")
-  const [userName, setUserName] = useState("")
-  const [transactions, setTransactions] = useState<Transaction[]>(sampleTransactions)
-  const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>(sampleTransactions)
-  const [sortField, setSortField] = useState<keyof Transaction>("date")
-  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc")
-  const [filter, setFilter] = useState<"All" | "Purchase" | "Top-up">("All")
-  const router = useRouter()
+  const router = useRouter();
 
+  const [user, setUser] = useState<NativeUser | null>(null);
+  const [loadingUser, setLoadingUser] = useState(true);
+
+  // Transactions state
+  const [transactions, setTransactions] = useState<UiTransaction[]>([]);
+  const [loadingTx, setLoadingTx] = useState(false);
+  const [txError, setTxError] = useState<string | null>(null);
+
+  // UI state
+  const [filteredTransactions, setFilteredTransactions] = useState<UiTransaction[]>([]);
+  const [sortField, setSortField] = useState<keyof UiTransaction>("date");
+  const [sortDirection, setSortDirection] = useState<"asc" | "desc">("desc");
+  const [filter, setFilter] = useState<"All" | "Purchase" | "Top-up">("All");
+
+  // Pagination state
+  const [page, setPage] = useState(1);
+
+  // --- Load user from localStorage ---
   useEffect(() => {
-    const isLoggedIn = localStorage.getItem("isLoggedIn")
-    const email = localStorage.getItem("userEmail")
-
+    const isLoggedIn = localStorage.getItem("isLoggedIn");
     if (!isLoggedIn) {
-      router.push("/login")
-      return
+      router.push("/login");
+      return;
     }
 
-    if (email) {
-      setUserEmail(email)
-      // Generate name from email for demo
-      const name = email.split("@")[0]
-      setUserName(name.charAt(0).toUpperCase() + name.slice(1))
+    const nativeUserRaw = localStorage.getItem("native_user");
+    if (nativeUserRaw) {
+      try {
+        const parsed = JSON.parse(nativeUserRaw) as NativeUser;
+        setUser(parsed);
+      } catch {
+        const email = localStorage.getItem("userEmail") || "";
+        setUser({ id: -1, email });
+      }
+    } else {
+      const email = localStorage.getItem("userEmail") || "";
+      setUser({ id: -1, email });
     }
-  }, [router])
+    setLoadingUser(false);
+  }, [router]);
 
+  // --- Fetch transactions for this user ---
   useEffect(() => {
-    let filtered = transactions
+    const run = async () => {
+      if (!user || user.id === -1) return;
+      setLoadingTx(true);
+      setTxError(null);
 
+      const TABLE_NAME = "native_transactions";
+      try {
+        const { data, error } = await supabase
+          .from(TABLE_NAME)
+          .select("*")
+          .eq("user", String(user.id))
+          .order("created_at", { ascending: false });
+
+        if (error) throw error;
+        const rows = (data || []) as ApiTransaction[];
+
+        const mapped: UiTransaction[] = rows.map((r) => {
+          const isTopUp = r.type.toLowerCase() === "top up";
+          const amt = typeof r.amount === "string" ? parseFloat(r.amount) : Number(r.amount);
+          const signed = isTopUp ? Math.abs(amt) : -Math.abs(amt);
+
+          return {
+            id: String(r.id),
+            date: r.created_at,
+            amount: signed,
+            type: isTopUp ? "Top-up" : "Purchase",
+          };
+        });
+
+        setTransactions(mapped);
+      } catch (err: any) {
+        setTxError(err?.message || "Failed to load transactions.");
+      } finally {
+        setLoadingTx(false);
+      }
+    };
+
+    run();
+  }, [user]);
+
+  // Derived
+  const displayName = useMemo(() => {
+    if (!user) return "";
+    if (user.fname || user.lname) return `${user.fname ?? ""} ${user.lname ?? ""}`.trim();
+    const emailPart = user.email?.split("@")[0] ?? "";
+    return emailPart ? emailPart.charAt(0).toUpperCase() + emailPart.slice(1) : "User";
+  }, [user]);
+
+  // --- Filtering & Sorting (reset to page 1 on changes) ---
+  useEffect(() => {
+    let filtered = transactions;
     if (filter !== "All") {
-      filtered = transactions.filter((t) => t.type === filter)
+      filtered = transactions.filter((t) => t.type === filter);
     }
 
-    filtered.sort((a, b) => {
-      let aValue = a[sortField]
-      let bValue = b[sortField]
+    filtered = [...filtered].sort((a, b) => {
+      let aValue: any = a[sortField];
+      let bValue: any = b[sortField];
 
       if (sortField === "date") {
-        aValue = new Date(a.date).getTime()
-        bValue = new Date(b.date).getTime()
+        aValue = new Date(a.date).getTime();
+        bValue = new Date(b.date).getTime();
       }
 
-      if (sortDirection === "asc") {
-        return aValue < bValue ? -1 : aValue > bValue ? 1 : 0
-      } else {
-        return aValue > bValue ? -1 : aValue < bValue ? 1 : 0
-      }
-    })
+      if (sortDirection === "asc") return aValue < bValue ? -1 : aValue > bValue ? 1 : 0;
+      return aValue > bValue ? -1 : aValue < bValue ? 1 : 0;
+    });
 
-    setFilteredTransactions(filtered)
-  }, [transactions, filter, sortField, sortDirection])
+    setFilteredTransactions(filtered);
+    setPage(1);
+  }, [transactions, filter, sortField, sortDirection]);
 
-  const handleSort = (field: keyof Transaction) => {
+  const handleSort = (field: keyof UiTransaction) => {
     if (sortField === field) {
-      setSortDirection(sortDirection === "asc" ? "desc" : "asc")
+      setSortDirection((d) => (d === "asc" ? "desc" : "asc"));
     } else {
-      setSortField(field)
-      setSortDirection("desc")
+      setSortField(field);
+      setSortDirection("desc");
     }
-  }
+  };
 
-  const formatDate = (dateString: string) => {
-    return new Date(dateString).toLocaleDateString("en-US", {
+  const formatDate = (iso: string) =>
+    new Date(iso).toLocaleDateString("en-US", {
       month: "short",
       day: "numeric",
       year: "numeric",
-    })
-  }
+    });
 
-  const formatAmount = (amount: number) => {
-    const formatted = Math.abs(amount).toLocaleString("en-US", {
-      style: "currency",
-      currency: "USD",
-    })
-    return amount >= 0 ? `+${formatted}` : `-${formatted}`
-  }
+  // --- Logout (confirmed) ---
+  const actuallyLogout = () => {
+    localStorage.removeItem("isLoggedIn");
+    localStorage.removeItem("userEmail");
+    localStorage.removeItem("native_user");
+    router.push("/login");
+  };
 
-  const handleLogout = () => {
-    localStorage.removeItem("isLoggedIn")
-    localStorage.removeItem("userEmail")
-    router.push("/login")
-  }
+  // --- Pagination derived values ---
+  const totalPages = Math.max(1, Math.ceil(filteredTransactions.length / PAGE_SIZE));
+  const startIndex = (page - 1) * PAGE_SIZE;
+  const endIndex = Math.min(startIndex + PAGE_SIZE, filteredTransactions.length);
+  const paginated = useMemo(
+    () => filteredTransactions.slice(startIndex, endIndex),
+    [filteredTransactions, startIndex, endIndex]
+  );
 
-  const handleChangePassword = () => {
-    router.push("/change-password")
-  }
+  // Keep page in bounds if data changes
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages);
+  }, [totalPages, page]);
 
-  if (!userEmail) {
+  if (loadingUser) {
     return (
       <div className="flex items-center justify-center min-h-screen">
         <div className="text-muted-foreground">Loading...</div>
       </div>
-    )
+    );
   }
+  if (!user) return null;
 
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <header className="border-b border-border/50 bg-card/30 backdrop-blur-sm sticky top-0 z-50">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
+      {/* Top bar (not sticky so centering is easy) */}
+      <div className="w-full">
+        <div className="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
-            <p className="text-sm text-muted-foreground">Welcome back, {userName}</p>
+            <p className="text-sm text-muted-foreground">Welcome back, {displayName}</p>
           </div>
-          <div className="flex items-center gap-3">
-            <ThemeToggle />
-            <Button variant="outline" size="sm" onClick={handleLogout} className="rounded-xl bg-transparent">
-              <LogOut className="h-4 w-4 mr-2" />
-              Logout
-            </Button>
-          </div>
+
+          {/* Logout with confirmation */}
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="outline" size="sm" className="rounded-xl bg-transparent">
+                <LogOut className="h-4 w-4 mr-2" />
+                Logout
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Log out?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  You’ll be signed out of your session and returned to the login screen.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={actuallyLogout}>Logout</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
         </div>
-      </header>
+      </div>
 
-      <main className="container mx-auto px-4 py-8">
-        {/* Hero Banner + User Card Grid */}
-        <div className="grid lg:grid-cols-2 gap-8 mb-8">
-          {/* User Card */}
-          <Card className="shadow-xl border-0 bg-card/50 backdrop-blur-sm">
-            <CardHeader className="pb-4">
-              <div className="flex items-center gap-4">
-                <Avatar className="h-16 w-16 ring-2 ring-primary/20">
-                  <AvatarImage src="/placeholder-user.png" />
-                  <AvatarFallback className="bg-primary/10 text-primary text-xl font-semibold">
-                    {userName.charAt(0)}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1">
-                  <CardTitle className="text-xl">{userName}</CardTitle>
-                  <CardDescription className="flex items-center gap-2 mt-1">
-                    <Mail className="h-4 w-4" />
-                    {userEmail}
-                  </CardDescription>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                <div className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4" />
-                  <span>Member since Jan 2024</span>
-                </div>
-                <Badge variant="secondary" className="rounded-full">
-                  Active
-                </Badge>
-              </div>
+      {/* Center the 2-column grid in the viewport.
+          On mobile it stacks (2 rows), on lg+ it shows side-by-side (2 columns). */}
+      <main className="min-h-[calc(100vh-88px)] flex items-center justify-center px-4 py-6">
+        <div className="w-full max-w-7xl">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            {/* Left: Activation Card */}
+            <Card className="shadow-xl border-0 bg-card/50 backdrop-blur-sm">
+              <CardHeader>
+                <CardTitle className="text-xl">Your Activation Card</CardTitle>
+                <CardDescription>
+                  Use this card at checkout to verify your account and apply discounts.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {user.card_url ? (
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-border/50 overflow-hidden">
+                      <img src={user.card_url} alt="Activation Card" className="w-full h-auto block" />
+                    </div>
+                    <div className="flex gap-3">
+                      <a
+                        href={user.card_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center justify-center rounded-xl border border-border/60 px-4 py-2 text-sm hover:bg-accent"
+                      >
+                        Open
+                      </a>
+                      <a
+                        href={user.card_url}
+                        download={`activation-card-${displayName || "user"}.png`}
+                        className="inline-flex items-center justify-center rounded-xl bg-primary px-4 py-2 text-primary-foreground text-sm hover:bg-primary/90"
+                      >
+                        <Download className="w-4 h-4 mr-2" />
+                        Download
+                      </a>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-sm text-muted-foreground">No activation card found on your profile.</div>
+                )}
+              </CardContent>
+            </Card>
 
-              <div className="pt-4 border-t border-border/50">
-                <h4 className="text-sm font-medium mb-3">Quick Actions</h4>
-                <div className="flex flex-col gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={handleChangePassword}
-                    className="justify-start rounded-xl h-10 bg-transparent"
-                  >
-                    <Key className="h-4 w-4 mr-2" />
-                    Change Password
-                  </Button>
-                  <Button variant="outline" size="sm" className="justify-start rounded-xl h-10 bg-transparent">
-                    <Settings className="h-4 w-4 mr-2" />
-                    Account Settings
-                  </Button>
-                  <Button variant="outline" size="sm" className="justify-start rounded-xl h-10 bg-transparent">
-                    <User className="h-4 w-4 mr-2" />
-                    Edit Profile
-                  </Button>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Hero Banner */}
-          <Card className="shadow-xl border-0 bg-gradient-to-br from-primary/10 via-primary/5 to-accent/10 backdrop-blur-sm overflow-hidden">
-            <div className="relative h-full min-h-[400px]">
-              <div className="absolute inset-0 bg-gradient-to-br from-primary/20 to-accent/20" />
-              <img
-                src="/modern-business-dashboard-hero-banner-with-abstrac.png"
-                alt="Dashboard Hero"
-                className="absolute inset-0 w-full h-full object-cover opacity-30"
-              />
-              <div className="relative z-10 p-8 h-full flex flex-col justify-center">
-                <div className="space-y-4">
-                  <Badge className="w-fit bg-primary/20 text-primary border-primary/30 rounded-full">
-                    Welcome Back
-                  </Badge>
-                  <h2 className="text-3xl font-bold tracking-tight text-foreground">
-                    Your Financial
-                    <br />
-                    <span className="text-primary">Dashboard</span>
-                  </h2>
-                  <p className="text-muted-foreground max-w-md leading-relaxed">
-                    Monitor your transactions, track your spending, and manage your account with our comprehensive
-                    dashboard tools.
-                  </p>
-                  <div className="pt-4">
-                    <Button className="rounded-xl bg-primary hover:bg-primary/90 shadow-lg hover:shadow-xl transition-all duration-200">
-                      View Analytics
+            {/* Right: Transactions */}
+            <Card className="shadow-xl border-0 bg-card/50 backdrop-blur-sm">
+              <CardHeader>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                  <div>
+                    <CardTitle className="text-xl">Recent Transactions</CardTitle>
+                    <CardDescription>Your latest financial activity</CardDescription>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <Select value={filter} onValueChange={(v: "All" | "Purchase" | "Top-up") => setFilter(v)}>
+                      <SelectTrigger className="w-36 rounded-xl border-border/50">
+                        <SelectValue placeholder="Filter" />
+                      </SelectTrigger>
+                      <SelectContent className="rounded-xl border-border/50">
+                        <SelectItem value="All">All</SelectItem>
+                        <SelectItem value="Purchase">Purchase</SelectItem>
+                        <SelectItem value="Top-up">Top-up</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button variant="outline" size="sm" className="rounded-xl bg-transparent">
+                      Export
                     </Button>
                   </div>
                 </div>
-              </div>
-            </div>
-          </Card>
-        </div>
+              </CardHeader>
 
-        <Card className="shadow-xl border-0 bg-card/50 backdrop-blur-sm">
-          <CardHeader>
-            <div className="flex items-center justify-between">
-              <div>
-                <CardTitle className="text-xl">Recent Transactions</CardTitle>
-                <CardDescription>Your latest financial activity</CardDescription>
-              </div>
-              <div className="flex items-center gap-3">
-                <Select value={filter} onValueChange={(value: "All" | "Purchase" | "Top-up") => setFilter(value)}>
-                  <SelectTrigger className="w-32 rounded-xl border-border/50">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="rounded-xl border-border/50">
-                    <SelectItem value="All">All</SelectItem>
-                    <SelectItem value="Purchase">Purchase</SelectItem>
-                    <SelectItem value="Top-up">Top-up</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Button variant="outline" size="sm" className="rounded-xl bg-transparent">
-                  Export
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-xl border border-border/50 overflow-hidden">
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-muted/30 hover:bg-muted/50">
-                    <TableHead className="font-semibold">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleSort("date")}
-                        className="h-8 p-0 font-semibold hover:bg-transparent"
-                      >
-                        Date
-                        {sortField === "date" &&
-                          (sortDirection === "asc" ? (
-                            <ArrowUp className="ml-2 h-4 w-4" />
-                          ) : (
-                            <ArrowDown className="ml-2 h-4 w-4" />
+              <CardContent>
+                {txError && (
+                  <div className="mb-4 text-sm text-red-600 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3">
+                    {txError}
+                  </div>
+                )}
+
+                {loadingTx ? (
+                  <div className="animate-pulse rounded-xl border border-border/50 p-6 text-muted-foreground">
+                    Loading transactions…
+                  </div>
+                ) : (
+                  <>
+                    <div className="rounded-xl border border-border/50 overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow className="bg-muted/30 hover:bg-muted/50">
+                            <TableHead className="font-semibold whitespace-nowrap">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleSort("date")}
+                                className="h-8 p-0 font-semibold hover:bg-transparent"
+                              >
+                                Date
+                                {sortField === "date" ? (
+                                  sortDirection === "asc" ? (
+                                    <ArrowUp className="ml-2 h-4 w-4" />
+                                  ) : (
+                                    <ArrowDown className="ml-2 h-4 w-4" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                                )}
+                              </Button>
+                            </TableHead>
+                            <TableHead className="font-semibold whitespace-nowrap">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleSort("type")}
+                                className="h-8 p-0 font-semibold hover:bg-transparent"
+                              >
+                                Type
+                                {sortField === "type" ? (
+                                  sortDirection === "asc" ? (
+                                    <ArrowUp className="ml-2 h-4 w-4" />
+                                  ) : (
+                                    <ArrowDown className="ml-2 h-4 w-4" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                                )}
+                              </Button>
+                            </TableHead>
+                            <TableHead className="text-right font-semibold whitespace-nowrap">
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => handleSort("amount")}
+                                className="h-8 p-0 font-semibold hover:bg-transparent"
+                              >
+                                Amount
+                                {sortField === "amount" ? (
+                                  sortDirection === "asc" ? (
+                                    <ArrowUp className="ml-2 h-4 w-4" />
+                                  ) : (
+                                    <ArrowDown className="ml-2 h-4 w-4" />
+                                  )
+                                ) : (
+                                  <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />
+                                )}
+                              </Button>
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {paginated.map((t, index) => (
+                            <TableRow
+                              key={t.id}
+                              className={`hover:bg-muted/30 transition-colors ${
+                                index % 2 === 0 ? "bg-background" : "bg-muted/10"
+                              }`}
+                            >
+                              <TableCell className="font-medium whitespace-nowrap">
+                                {formatDate(t.date)}
+                              </TableCell>
+                              <TableCell className="whitespace-nowrap">
+                                <Badge
+                                  className={`rounded-full ${
+                                    t.type === "Top-up"
+                                      ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
+                                      : "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400"
+                                  }`}
+                                >
+                                  {t.type === "Top-up" ? (
+                                    <TrendingUp className="w-3 h-3 mr-1" />
+                                  ) : (
+                                    <TrendingDown className="w-3 h-3 mr-1" />
+                                  )}
+                                  {t.type}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-right font-semibold whitespace-nowrap">
+                                <span
+                                  className={
+                                    t.amount >= 0
+                                      ? "text-green-600 dark:text-green-400"
+                                      : "text-red-600 dark:text-red-400"
+                                  }
+                                >
+                                  Rs {t.amount}
+                                </span>
+                              </TableCell>
+                            </TableRow>
                           ))}
-                        {sortField !== "date" && <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />}
-                      </Button>
-                    </TableHead>
-                    <TableHead className="font-semibold">Description</TableHead>
-                    <TableHead className="font-semibold">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleSort("type")}
-                        className="h-8 p-0 font-semibold hover:bg-transparent"
-                      >
-                        Type
-                        {sortField === "type" &&
-                          (sortDirection === "asc" ? (
-                            <ArrowUp className="ml-2 h-4 w-4" />
-                          ) : (
-                            <ArrowDown className="ml-2 h-4 w-4" />
-                          ))}
-                        {sortField !== "type" && <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />}
-                      </Button>
-                    </TableHead>
-                    <TableHead className="text-right font-semibold">
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => handleSort("amount")}
-                        className="h-8 p-0 font-semibold hover:bg-transparent"
-                      >
-                        Amount
-                        {sortField === "amount" &&
-                          (sortDirection === "asc" ? (
-                            <ArrowUp className="ml-2 h-4 w-4" />
-                          ) : (
-                            <ArrowDown className="ml-2 h-4 w-4" />
-                          ))}
-                        {sortField !== "amount" && <ArrowUpDown className="ml-2 h-4 w-4 opacity-50" />}
-                      </Button>
-                    </TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {filteredTransactions.map((transaction, index) => (
-                    <TableRow
-                      key={transaction.id}
-                      className={`hover:bg-muted/30 transition-colors ${index % 2 === 0 ? "bg-background" : "bg-muted/10"}`}
-                    >
-                      <TableCell className="font-medium">{formatDate(transaction.date)}</TableCell>
-                      <TableCell className="text-muted-foreground">{transaction.description}</TableCell>
-                      <TableCell>
-                        <Badge
-                          variant={transaction.type === "Top-up" ? "default" : "secondary"}
-                          className={`rounded-full ${
-                            transaction.type === "Top-up"
-                              ? "bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400"
-                              : "bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-400"
-                          }`}
-                        >
-                          {transaction.type === "Top-up" ? (
-                            <TrendingUp className="w-3 h-3 mr-1" />
-                          ) : (
-                            <TrendingDown className="w-3 h-3 mr-1" />
-                          )}
-                          {transaction.type}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right font-semibold">
-                        <span
-                          className={
-                            transaction.amount >= 0
-                              ? "text-green-600 dark:text-green-400"
-                              : "text-red-600 dark:text-red-400"
-                          }
-                        >
-                          {formatAmount(transaction.amount)}
+                        </TableBody>
+                      </Table>
+                    </div>
+
+                    {/* Pagination bar */}
+                    <div className="mt-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+                      <div className="text-sm text-muted-foreground">
+                        Showing{" "}
+                        <span className="font-medium">
+                          {filteredTransactions.length === 0 ? 0 : startIndex + 1}
                         </span>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
+                        –<span className="font-medium">{endIndex}</span> of{" "}
+                        <span className="font-medium">{filteredTransactions.length}</span>
+                      </div>
 
-            {filteredTransactions.length === 0 && (
-              <div className="text-center py-12 text-muted-foreground">
-                <div className="text-lg font-medium mb-2">No transactions found</div>
-                <p className="text-sm">Try adjusting your filter to see more results.</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="rounded-xl"
+                          onClick={() => setPage((p) => Math.max(1, p - 1))}
+                          disabled={page === 1}
+                        >
+                          Prev
+                        </Button>
+
+                        {Array.from({ length: totalPages }, (_, i) => i + 1)
+                          .slice(Math.max(0, page - 3), Math.max(0, page - 3) + 5)
+                          .map((p) => (
+                            <Button
+                              key={p}
+                              variant={p === page ? "default" : "outline"}
+                              size="sm"
+                              className="rounded-xl w-9"
+                              onClick={() => setPage(p)}
+                            >
+                              {p}
+                            </Button>
+                          ))}
+
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="rounded-xl"
+                          onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                          disabled={page === totalPages}
+                        >
+                          Next
+                        </Button>
+                      </div>
+                    </div>
+
+                    {filteredTransactions.length === 0 && !txError && (
+                      <div className="text-center py-12 text-muted-foreground">
+                        <div className="text-lg font-medium mb-2">No transactions found</div>
+                        <p className="text-sm">Try adjusting your filter to see more results.</p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </div>
+        </div>
       </main>
     </div>
-  )
+  );
 }
